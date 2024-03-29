@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 
 import copy
+import time
 
 class Naive_LLM(nn.Module):
     def __init__(self, model_name, model_kwargs={}, tok_kwargs={}, device='cuda'):
@@ -32,16 +33,24 @@ class Naive_LLM(nn.Module):
     
     def generate(self, input_texts, return_full_text=True, generate_kwargs={}):
         tokenizer_outputs = self.tokenizer(input_texts, padding=True, return_tensors='pt').to(self.device)
+        start_time = time.monotonic()
         generate_ids = self.transformers.generate(**tokenizer_outputs, **generate_kwargs)
+        elapsed_time = time.monotonic() - start_time
         generated = self.generate_tokenizer.batch_decode(generate_ids, skip_special_tokens=True)
-        
-        if return_full_text:
-            return generated[0] if isinstance(input_texts, str) else generated
+
+        # Calculate tokens per second
+        total_tokens = torch.numel(generate_ids)
+        prompt_tokens = torch.sum(tokenizer_outputs['attention_mask']).item() # Number of valid input prompt tokens
+        generated_tokens = total_tokens - prompt_tokens
+        tokens_per_second = generated_tokens / elapsed_time
+
+        if return_full_text and isinstance(input_texts, str):
+            generated = generated[0]
         # If return_full_text is false we should exclude the input prompt
-        if isinstance(input_texts, str):
+        elif isinstance(input_texts, str):
             prompt_length = len(input_texts)
             generated = generated[0][prompt_length:]
         else:
             prompt_lengths = [len(i) for i in input_texts]
             generated = [gen[length:] for (length, gen) in zip(prompt_lengths, generated)]
-        return generated
+        return generated, tokens_per_second, elapsed_time
