@@ -32,7 +32,7 @@ class Naive_LLM(nn.Module):
         return loss
     
     def generate(self, input_texts, return_full_text=True, generate_kwargs={}):
-        tokenizer_outputs = self.tokenizer(input_texts, padding=True, return_tensors='pt').to(self.device)
+        tokenizer_outputs = self.generate_tokenizer(input_texts, padding=True, return_tensors='pt').to(self.device)
         start_time = time.monotonic()
         generate_ids = self.transformers.generate(**tokenizer_outputs, **generate_kwargs)
         elapsed_time = time.monotonic() - start_time
@@ -41,8 +41,7 @@ class Naive_LLM(nn.Module):
         # Calculate tokens per second
         total_tokens = torch.numel(generate_ids)
         prompt_tokens = torch.sum(tokenizer_outputs['attention_mask']).item() # Number of valid input prompt tokens
-        generated_tokens = total_tokens - prompt_tokens
-        tokens_per_second = generated_tokens / elapsed_time
+        num_generated_tokens = total_tokens - prompt_tokens
 
         if return_full_text and isinstance(input_texts, str):
             generated = generated[0]
@@ -53,4 +52,4 @@ class Naive_LLM(nn.Module):
         else:
             prompt_lengths = [len(i) for i in input_texts]
             generated = [gen[length:] for (length, gen) in zip(prompt_lengths, generated)]
-        return generated, tokens_per_second, elapsed_time
+        return generated, num_generated_tokens, elapsed_time

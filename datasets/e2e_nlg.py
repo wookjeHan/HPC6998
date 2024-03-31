@@ -4,7 +4,7 @@ import csv
 from pathlib import Path
 from typing import Union
 from torch.utils.data import Dataset
-from retriever import download_and_unzip_dataset_from_url
+from datasets.retriever import download_and_unzip_dataset_from_url
 
 class E2ENLGSample:
     def __init__(self, mr: str, ref: str):

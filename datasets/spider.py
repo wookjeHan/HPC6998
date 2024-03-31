@@ -4,7 +4,7 @@ import numpy as np
 from pathlib import Path
 from typing import Union, List, Dict
 from torch.utils.data import Dataset
-from retriever import download_and_unzip_dataset_from_google_drive
+from datasets.retriever import download_and_unzip_dataset_from_google_drive
 
 class SpiderSample:
     def __init__(
