@@ -4,10 +4,7 @@ from tqdm import tqdm
 from transformers import GenerationConfig
 
 from models import Naive_LLM
-from datasets.spider import Spider
-from datasets.dialogsum import DialogSum
-from datasets.e2e_nlg import E2ENLG
-from datasets.utils import create_dataloader
+from datasets import Spider, DialogSum, E2ENLG, create_dataloader
 
 
 if __name__ == "__main__":

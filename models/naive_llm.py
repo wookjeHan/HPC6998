@@ -37,12 +37,10 @@ class Naive_LLM(nn.Module):
         generate_ids = self.transformers.generate(**tokenizer_outputs, **generate_kwargs)
         elapsed_time = time.monotonic() - start_time
         generated = self.generate_tokenizer.batch_decode(generate_ids, skip_special_tokens=True)
-
         # Calculate tokens per second
-        total_tokens = torch.numel(generate_ids)
+        total_tokens = torch.numel(generate_ids[generate_ids!=self.tokenizer.pad_token_id])
         prompt_tokens = torch.sum(tokenizer_outputs['attention_mask']).item() # Number of valid input prompt tokens
         num_generated_tokens = total_tokens - prompt_tokens
-
         if return_full_text and isinstance(input_texts, str):
             generated = generated[0]
         # If return_full_text is false we should exclude the input prompt
