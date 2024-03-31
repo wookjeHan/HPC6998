@@ -36,6 +36,11 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Datasets
+datasets/Spider
+datasets/E2E_NLG
+datasets/DialogSum
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
