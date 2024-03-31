@@ -21,3 +21,11 @@ spider_dataloader = create_dataloader(
     shuffle=True,
     num_workers=8
 )
+spider_dataloader = create_dataloader(
+    dataset=E2ENLG,
+    root=f"./{E2ENLG.name}",
+    train=False,
+    batch_size=32,
+    shuffle=True,
+    num_workers=8
+)

@@ -7,7 +7,7 @@ from torch.utils.data import Dataset
 from retriever import download_and_unzip_dataset_from_url
 
 class E2ENLGSample:
-    def __init__(self, mr: str, ref: str):
+    def __init__(self, mr: str, ref: str = None):
         self.mr = mr
         self.ref = ref
     
