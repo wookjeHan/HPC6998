@@ -13,15 +13,15 @@ from datasets.utils import create_dataloader
 if __name__ == "__main__":
     batch_size = 32
 
-    spider = Spider(download=True)
+    spider = Spider(download=True, train=False)
     spider_prompts = [sample.question for sample in spider]
     # print(spider_prompts[:5])
 
-    dialogsum = DialogSum(download=True)
+    dialogsum = DialogSum(download=True, train=False)
     dialogsum_prompts = [sample.summary for sample in dialogsum] # not actually the prompt, need to come up with one
     # print(dialogsum_prompts[:5])
 
-    e2e_nlg = E2ENLG(download=True)
+    e2e_nlg = E2ENLG(download=True, train=False)
     e2e_nlg_prompts = [sample.ref for sample in e2e_nlg] # same, not actually the prompt
     # print(e2e_nlg_prompts[:5])
 
