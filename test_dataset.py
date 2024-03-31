@@ -1,7 +1,4 @@
-from spider import Spider
-from dialogsum import DialogSum
-from e2e_nlg import E2ENLG
-from utils import create_dataloader
+from datasets import Spider, DialogSum, E2ENLG, create_dataloader
 
 spider = Spider(download=True)
 print(spider.__getitem__(1))

@@ -4,7 +4,7 @@ import numpy as np
 from pathlib import Path
 from typing import Union
 from torch.utils.data import Dataset
-from retriever import download_github_folder_contents
+from datasets.retriever import download_github_folder_contents
 
 class DialogSumSample:
     def __init__(self, fname: str, dialogue: str, summary: str, topic: str):
