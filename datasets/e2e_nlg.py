@@ -48,7 +48,7 @@ class E2ENLG(Dataset):
 
     def _load_data(self):
         TRAIN_DATA_FILE = "e2e-dataset/trainset.csv"
-        TEST_DATA_FILE = "e2e-dataset/testset.csv"
+        TEST_DATA_FILE = "e2e-dataset/testset_w_refs.csv"
         data_file = TRAIN_DATA_FILE if self.train else TEST_DATA_FILE
 
         with open(f"{self.root}/{data_file}", mode='r') as file:

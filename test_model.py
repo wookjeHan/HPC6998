@@ -1,10 +1,22 @@
-from models import Naive_LLM
+import argparse
+
+from models import Naive_LLM, Naive_LLM_Quant, LLM_Flash
 
 
 
 if __name__ == "__main__":
-    test_model = Naive_LLM("openlm-research/open_llama_3b_v2")
-    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model', type=str, default="Naive_LLM")
+    parser.add_argument('--model_name', type=str, default="EleutherAI/gpt-neo-2.7B")
+    args = parser.parse_args()
+
+    if args.model == "Naive_LLM":
+        test_model = Naive_LLM(args.model_name)
+    elif args.model == "LLM_Quant":
+        test_model = Naive_LLM_Quant(args.model_name)
+    elif args.model == "LLM_Flash":
+        test_model = LLM_Flash(args.model_name)
+        
     # Forward is for training
     # You can give a single string
     loss = test_model.forward("Cheer up guys")
