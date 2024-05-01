@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """ PyTorch GPT Neo model."""
-
+STREAM_LAYER_NUM=12
+NGRAMS=3
 
 import os
 from typing import Optional, Tuple, Union
@@ -47,6 +48,7 @@ from ...utils import (
     logging,
 )
 from .configuration_gpt_neo import GPTNeoConfig
+from .positional_embedding import LearnedPositionalEmbedding
 
 
 if is_flash_attn_2_available():
@@ -72,6 +74,8 @@ from ..deprecated._archive_maps import GPT_NEO_PRETRAINED_MODEL_ARCHIVE_LIST  # 
 
 
 _CHECKPOINT_FOR_DOC = "EleutherAI/gpt-neo-1.3B"
+
+from .multi_stream_attention import NgramMultiheadAttention
 
 
 # Copied from transformers.models.llama.modeling_llama._get_unpad_data
@@ -292,6 +296,134 @@ class GPTNeoSelfAttention(nn.Module):
         return outputs  # a, present, (attentions)
 
 
+class GPTNeoMultiStreamAttention(nn.Module):
+    def __init__(self, config, attention_type):
+        super().__init__()
+        self.config = config
+
+        max_positions = config.max_position_embeddings
+        bias = torch.tril(torch.ones((max_positions, max_positions), dtype=bool)).view(
+            1, 1, max_positions, max_positions
+        )
+
+        # local causal self attention is a sliding window where each token can only attend to the previous
+        # window_size tokens. This is implemented by updating the causal mask such that for each token
+        # all other tokens are masked except the previous window_size tokens.
+        if attention_type == "local":
+            bias = torch.bitwise_xor(bias, torch.tril(bias, -config.window_size))
+
+        self.register_buffer("bias", bias, persistent=False)
+        self.register_buffer("masked_bias", torch.tensor(-1e9), persistent=False)
+
+        self.attn_dropout = nn.Dropout(float(config.attention_dropout))
+        self.resid_dropout = nn.Dropout(float(config.resid_dropout))
+        self.is_causal = True
+
+        self.embed_dim = config.hidden_size
+        self.num_heads = config.num_heads
+        self.head_dim = self.embed_dim // self.num_heads
+        if self.head_dim * self.num_heads != self.embed_dim:
+            raise ValueError(
+                f"embed_dim must be divisible by num_heads (got `embed_dim`: {self.embed_dim} and `num_heads`:"
+                f" {self.num_heads})."
+            )
+
+        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
+        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
+        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
+        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
+
+    def _split_heads(self, tensor, num_heads, attn_head_size):
+        """
+        Splits hidden_size dim into attn_head_size and num_heads
+        """
+        new_shape = tensor.size()[:-1] + (num_heads, attn_head_size)
+        tensor = tensor.view(new_shape)
+        return tensor.permute(0, 2, 1, 3)  # (batch, head, seq_length, head_features)
+
+    def _merge_heads(self, tensor, num_heads, attn_head_size):
+        """
+        Merges attn_head_size dim and num_attn_heads dim into hidden_size
+        """
+        tensor = tensor.permute(0, 2, 1, 3).contiguous()
+        new_shape = tensor.size()[:-2] + (num_heads * attn_head_size,)
+        return tensor.view(new_shape)
+
+    def _attn(self, query, key, value, attention_mask=None, head_mask=None):
+        # Keep the attention weights computation in fp32 to avoid overflow issues
+        query = query.to(torch.float32)
+        key = key.to(torch.float32)
+
+        attn_weights = torch.matmul(query, key.transpose(-1, -2))
+
+        query_length, key_length = query.size(-2), key.size(-2)
+        causal_mask = self.bias[:, :, key_length - query_length : key_length, :key_length]
+        mask_value = torch.finfo(attn_weights.dtype).min
+        # Need to be a tensor, otherwise we get error: `RuntimeError: expected scalar type float but found double`.
+        # Need to be on the same device, otherwise `RuntimeError: ..., x and y to be on the same device`
+        mask_value = torch.tensor(mask_value, dtype=attn_weights.dtype).to(attn_weights.device)
+        attn_weights = torch.where(causal_mask, attn_weights, mask_value)
+
+        if attention_mask is not None:
+            # Apply the attention mask
+            attn_weights = attn_weights + attention_mask
+
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+        attn_weights = attn_weights.to(value.dtype)
+        attn_weights = self.attn_dropout(attn_weights)
+
+        # Mask heads if we want to
+        if head_mask is not None:
+            attn_weights = attn_weights * head_mask
+
+        attn_output = torch.matmul(attn_weights, value)
+
+        return attn_output, attn_weights
+
+    def forward(
+        self,
+        hidden_states_stream,
+        hidden_states_main,
+        attention_mask=None,
+        layer_past=None,
+        head_mask=None,
+        use_cache=False,
+        output_attentions=False,
+    ):
+        # TODO: CHANGE HIDDEN_STATES AS PAPER
+        query = self.q_proj(hidden_states_stream)
+        key = self.k_proj(hidden_states_main + hidden_states_stream)
+        value = self.v_proj(hidden_states_main + hidden_states_stream)
+
+        query = self._split_heads(query, self.num_heads, self.head_dim)
+        key = self._split_heads(key, self.num_heads, self.head_dim)
+        value = self._split_heads(value, self.num_heads, self.head_dim)
+
+        if layer_past is not None:
+            past_key = layer_past[0]
+            past_value = layer_past[1]
+            key = torch.cat((past_key, key), dim=-2)
+            value = torch.cat((past_value, value), dim=-2)
+
+        if use_cache is True:
+            present = (key, value)
+        else:
+            present = None
+
+        attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
+
+        attn_output = self._merge_heads(attn_output, self.num_heads, self.head_dim)
+        attn_output = self.out_proj(attn_output)
+        attn_output = self.resid_dropout(attn_output)
+
+        outputs = (attn_output, present)
+        if output_attentions:
+            outputs += (attn_weights,)
+
+        return outputs  # a, present, (attentions)
+
+
+
 class GPTNeoFlashAttention2(GPTNeoSelfAttention):
     """
     GPTNeo flash attention module. This module inherits from `GPTNeoSelfAttention` as the weights of the module stays
@@ -491,6 +623,7 @@ class GPTNeoFlashAttention2(GPTNeoSelfAttention):
 GPT_NEO_ATTENTION_CLASSES = {
     "eager": GPTNeoSelfAttention,
     "flash_attention_2": GPTNeoFlashAttention2,
+    "multi_stream_attention": GPTNeoMultiStreamAttention,
 }
 
 
@@ -544,6 +677,71 @@ class GPTNeoMLP(nn.Module):
         hidden_states = self.dropout(hidden_states)
         return hidden_states
 
+class GPTNeoStreamBlock(nn.Module):
+    def __init__(self, config, layer_id):
+        super().__init__()
+        hidden_size = config.hidden_size
+        inner_dim = config.intermediate_size if config.intermediate_size is not None else 4 * hidden_size
+        self.ln_1 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
+        self.main_stream_attention = GPTNeoAttention(config, layer_id)
+        self.stream_attentions = nn.ModuleList([GPTNeoMultiStreamAttention(config, layer_id) for _ in range(NGRAMS)])
+        self.ln_2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
+        self.mlp = GPTNeoMLP(inner_dim, config)
+    
+    def forward(
+        self,
+        hidden_states, # hidden_states[0]
+        layer_past=None,
+        attention_mask=None,
+        head_mask=None,
+        use_cache=False,
+        output_attentions=False,
+    ):
+        residual = hidden_states #(BATCH_SIZE, NGRAMS+1, SEQ_LEN, 2048)
+        hidden_states = self.ln_1(hidden_states) 
+        # WE HAVE TO CALL ALL ATTENTION FUNCTIONS WHICH INCLUDES MAINSTREAM + STREAM ATTENTIONS
+        # FIRST LET's CALL MAIN_STREAM_ATTENTION
+        hidden_states_for_main = hidden_states[:, 0, :, :]
+        attn_outputs = self.main_stream_attention(
+            hidden_states_for_main,
+            layer_past=layer_past,
+            attention_mask=attention_mask,
+            head_mask=head_mask,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+        )
+        for i in range(NGRAMS):
+            # 1. Extract appropriate hidden_states
+            hidden_states_for_stream = hidden_states[:, i+1, :, :]
+            hidden_states_for_main = hidden_states[:, 0, :, :]
+            tmp_attn_output = self.stream_attentions[i](
+                hidden_states_for_stream,
+                hidden_states_for_main,
+                layer_past=layer_past,
+                attention_mask=attention_mask,
+                head_mask=head_mask,
+                use_cache=use_cache,
+                output_attentions=output_attentions
+            )
+            attn_output = torch.stack((attn_outputs[0], tmp_attn_output[0]), dim=1)
+
+        attn_output = attn_outputs[0]  # Batch, NGRAMS+1, length, 2048
+        outputs = attn_outputs[1:]
+        # residual connection
+        hidden_states = attn_output + residual 
+
+        residual = hidden_states
+        hidden_states = self.ln_2(hidden_states)
+        feed_forward_hidden_states = self.mlp(hidden_states)
+        # residual connection
+        hidden_states = residual + feed_forward_hidden_states #(BATCH_SIZE, N_GRAMS+1, SEQ_LEN, 2048)
+
+        if use_cache:
+            outputs = (hidden_states,) + outputs
+        else:
+            outputs = (hidden_states,) + outputs[1:]
+
+        return outputs  # hidden_states, present, (attentions, cross_attentions)
 
 class GPTNeoBlock(nn.Module):
     def __init__(self, config, layer_id):
@@ -552,9 +750,10 @@ class GPTNeoBlock(nn.Module):
         inner_dim = config.intermediate_size if config.intermediate_size is not None else 4 * hidden_size
         self.ln_1 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
         self.attn = GPTNeoAttention(config, layer_id)
+            
         self.ln_2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
         self.mlp = GPTNeoMLP(inner_dim, config)
-
+    
     def forward(
         self,
         hidden_states,
@@ -720,7 +919,7 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
         self.wte = nn.Embedding(config.vocab_size, self.embed_dim)
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
         self.drop = nn.Dropout(float(config.embed_dropout))
-        self.h = nn.ModuleList([GPTNeoBlock(config, layer_id=i) for i in range(config.num_layers)])
+        self.h = nn.ModuleList([GPTNeoBlock(config, layer_id=i) for i in range(STREAM_LAYER_NUM)] + [GPTNeoStreamBlock(config, layer_id=i) for i in range(STREAM_LAYER_NUM, config.num_layers)])
         self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
 
@@ -847,8 +1046,20 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
                     use_cache=use_cache,
                     output_attentions=output_attentions,
                 )
+            hidden_states = outputs[0] 
+            #(Batch_size, Seq_len, 2048) if this is below stream_layer or (Batch_size, NGRAMS+1, Seq_len, 2048) if this is upper(or equal) to the stream layer
 
-            hidden_states = outputs[0]
+            if i==STREAM_LAYER_NUM-1:
+                batch_size = hidden_states.shape[0]
+                seq_len = hidden_states.shape[1]
+                dim = hidden_states.shape[-1]
+                hidden_states = hidden_states.unsqueeze(1) #
+                # Use broadcasting to repeat along the new dimension
+                hidden_states = hidden_states.expand(batch_size, NGRAMS+1, seq_len, dim)
+            # if i==STREAM_LAYER_NUM:
+            #     print(hidden_states.shape)
+                # quit()
+                
             if use_cache is True:
                 presents = presents + (outputs[1],)
 
@@ -856,15 +1067,14 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
                 all_self_attentions = all_self_attentions + (outputs[2 if use_cache else 1],)
 
         hidden_states = self.ln_f(hidden_states)
-
-        hidden_states = hidden_states.view(output_shape)
         # Add last hidden state
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
         if not return_dict:
             return tuple(v for v in [hidden_states, presents, all_hidden_states, all_self_attentions] if v is not None)
-
+        # print(hidden_states.shape)
+        # quit()
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=presents,
@@ -985,8 +1195,10 @@ class GPTNeoForCausalLM(GPTNeoPreTrainedModel):
             return_dict=return_dict,
         )
         hidden_states = transformer_outputs[0]
+        print("Transformer Outputs:", hidden_states.shape)
 
         lm_logits = self.lm_head(hidden_states)
+        print("LM Head:", lm_logits.shape)
 
         loss = None
         if labels is not None:
