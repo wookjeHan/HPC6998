@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+TOPK=2
 import copy
 import inspect
 import warnings
@@ -2501,10 +2501,11 @@ class GenerationMixin:
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
 
-            next_token_logits = outputs.logits[:, -1, :]
-
+            # TODO: logits shape will be (batch, N, seq_len, hidden_states) instead
+            next_token_logits = outputs.logits[:, :,  -1, :] #(batch, N, hidden_states)
+            
             # pre-process distribution
-            next_tokens_scores = logits_processor(input_ids, next_token_logits)
+            next_tokens_scores = logits_processor(input_ids, next_token_logits) #(batch, N, hidden_states)
 
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:
@@ -2526,9 +2527,8 @@ class GenerationMixin:
                         else (outputs.hidden_states,)
                     )
 
-            # argmax
-            next_tokens = torch.argmax(next_tokens_scores, dim=-1)
-
+            # argmax -> We have to fix next few tokens
+            next_tokens = torch.topk(next_tokens_scores, k=TOPK, dim=1)[1]
             # finished sentences should have their next token be a padding token
             if eos_token_id is not None:
                 if pad_token_id is None:
