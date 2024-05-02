@@ -13,7 +13,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-TOPK=2
 import copy
 import inspect
 import warnings
@@ -97,6 +96,19 @@ NEED_SETUP_CACHE_CLASSES_MAPPING = {
     "static": StaticCache,
 }
 
+TOPK=2
+MAGIC_NUMBER=15
+ADDITIONAL_ATTENTION_MASK = [[-float('inf') for i in range(MAGIC_NUMBER)] for j in range(MAGIC_NUMBER)]
+for i in range(MAGIC_NUMBER):
+    ADDITIONAL_ATTENTION_MASK[i][i] = 0
+    ADDITIONAL_ATTENTION_MASK[i][0] = 0
+    for j in range(1, i):
+        cur = i
+        while cur != 0:
+            cur = (cur-1)//2
+            ADDITIONAL_ATTENTION_MASK[i][cur] = 0
+
+ADDITIONAL_ATTENTION_MASK = torch.tensor(ADDITIONAL_ATTENTION_MASK, device='cuda')
 
 @dataclass
 class GenerateDecoderOnlyOutput(ModelOutput):
@@ -670,7 +682,7 @@ class GenerationMixin:
 
         if "cache_position" in model_kwargs and model_kwargs["cache_position"] is not None:
             model_kwargs["cache_position"] = model_kwargs["cache_position"][-1:] + 1
-
+        model_kwargs["additional_attention_mask"] = ADDITIONAL_ATTENTION_MASK
         return model_kwargs
 
     def _reorder_cache(self, past_key_values, beam_idx):
@@ -2500,10 +2512,8 @@ class GenerationMixin:
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
-
-            # TODO: logits shape will be (batch, N, seq_len, hidden_states) instead
+            # Logits shape will be (batch, N, seq_len, hidden_states) instead
             next_token_logits = outputs.logits[:, :,  -1, :] #(batch, N, hidden_states)
-            
             # pre-process distribution
             next_tokens_scores = logits_processor(input_ids, next_token_logits) #(batch, N, hidden_states)
 
@@ -2528,15 +2538,23 @@ class GenerationMixin:
                     )
 
             # argmax -> We have to fix next few tokens
-            next_tokens = torch.topk(next_tokens_scores, k=TOPK, dim=1)[1]
+            next_tokens = torch.topk(next_tokens_scores, k=TOPK, dim=-1)[1] #(Batch, NGRAMS, TOPK)
             # finished sentences should have their next token be a padding token
             if eos_token_id is not None:
                 if pad_token_id is None:
                     raise ValueError("If `eos_token_id` is defined, make sure that `pad_token_id` is defined.")
                 next_tokens = next_tokens * unfinished_sequences + pad_token_id * (1 - unfinished_sequences)
+            input_ids = torch.cat([input_ids, next_tokens[:, 0, 0].unsqueeze(1)], dim=1)
 
+            next_tokens = torch.cat([
+                next_tokens[:, 1].unsqueeze(1).repeat(1, 1, 1),  # Repeat tensor[:, 0] 1 time
+                next_tokens[:, 2].unsqueeze(1).repeat(1, 2, 1),  # Repeat tensor[:, 1] 2 times
+                next_tokens[:, 3].unsqueeze(1).repeat(1, 4, 1),  # Repeat tensor[:, 2] 4 times
+            ], dim=1
+            )
             # update generated ids, model inputs, and length for next step
-            input_ids = torch.cat([input_ids, next_tokens[:, None]], dim=-1)
+            input_ids = torch.cat([input_ids, next_tokens.reshape(next_tokens.shape[0], -1)], dim=-1)
+
             if streamer is not None:
                 streamer.put(next_tokens.cpu())
             model_kwargs = self._update_model_kwargs_for_generation(
@@ -2544,7 +2562,8 @@ class GenerationMixin:
                 model_kwargs,
                 is_encoder_decoder=self.config.is_encoder_decoder,
             )
-
+            print("INPUT ID DURING GENERATION")
+            print(input_ids.shape)
             unfinished_sequences = unfinished_sequences & ~stopping_criteria(input_ids, scores)
             this_peer_finished = unfinished_sequences.max() == 0
 

@@ -1147,6 +1147,7 @@ class GPTNeoForCausalLM(GPTNeoPreTrainedModel):
                 "position_ids": position_ids,
                 "attention_mask": attention_mask,
                 "token_type_ids": token_type_ids,
+                "additional_attention_mask": kwargs['additional_attention_mask'] if 'additional_attention_mask' in kwargs.keys() else None
             }
         )
 
@@ -1172,6 +1173,7 @@ class GPTNeoForCausalLM(GPTNeoPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        additional_attention_mask: Optional[torch.Tensor] = None,
     ) -> Union[Tuple[torch.Tensor], CausalLMOutputWithCrossAttentions]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -1179,6 +1181,15 @@ class GPTNeoForCausalLM(GPTNeoPreTrainedModel):
             `labels = input_ids` Indices are selected in `[-100, 0, ..., config.vocab_size]` All labels set to `-100`
             are ignored (masked), the loss is only computed for labels in `[0, ..., config.vocab_size]`
         """
+        print("INPUT_IDS DURING FORWARD")
+        print(input_ids.shape)
+        print("ATTENTION MASK DURING FORWARD")
+        print(attention_mask.shape)
+        print("ADDITIONAL ATTENTION MASK")
+        if additional_attention_mask is not None:
+            print(additional_attention_mask.shape)
+        else:
+            print("IT IS NONE")
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         transformer_outputs = self.transformer(
@@ -1195,10 +1206,8 @@ class GPTNeoForCausalLM(GPTNeoPreTrainedModel):
             return_dict=return_dict,
         )
         hidden_states = transformer_outputs[0]
-        print("Transformer Outputs:", hidden_states.shape)
 
         lm_logits = self.lm_head(hidden_states)
-        print("LM Head:", lm_logits.shape)
 
         loss = None
         if labels is not None:
