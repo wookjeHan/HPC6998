@@ -15,6 +15,8 @@
 """ PyTorch GPT Neo model."""
 STREAM_LAYER_NUM=12
 NGRAMS=3
+PRUNE_TREE_LAYER=3
+
 
 import os
 from typing import Optional, Tuple, Union
@@ -952,6 +954,8 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        additional_attention_mask: Optional[torch.Tensor] = None,
+        
     ) -> Union[Tuple[torch.Tensor], BaseModelOutputWithPastAndCrossAttentions]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -991,11 +995,11 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
         # attention_probs has shape bsz x num_heads x N x N
         # head_mask has shape n_layer x batch x num_heads x N x N
         head_mask = self.get_head_mask(head_mask, self.config.num_layers)
-
+        
         if inputs_embeds is None:
-            inputs_embeds = self.wte(input_ids)
+            inputs_embeds = self.wte(input_ids) 
         position_embeds = self.wpe(position_ids)
-        hidden_states = inputs_embeds + position_embeds
+        hidden_states = inputs_embeds + position_embeds #(Batch_size, seq_len, hidden_states)
 
         # Attention mask.
         if self._use_flash_attention_2:
@@ -1004,6 +1008,21 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
         else:
             # 4d mask is passed through the layers
             attention_mask = _prepare_4d_causal_attention_mask(attention_mask, input_shape, inputs_embeds, past_length)
+
+        # Value should be
+        # 7*7 -> 21*21
+        # Let's split it
+        """
+        A1 A2
+        A3 A4
+        where the shape of A1 -> 6*6 shape of A2 -> 6*15 A3 -> 15*6 A4 -> 15*15
+
+        Return value of attention mask -> 21*21 A1, A2, A3 has no problem
+        Problem -> A4 we should change A4 to additional attention mask
+        """
+        if additional_attention_mask is not None:
+            neg_dim = additional_attention_mask.shape[0] * -1
+            attention_mask[0, 0, neg_dim:, neg_dim:] = additional_attention_mask
 
         if token_type_ids is not None:
             token_type_embeds = self.wte(token_type_ids)
@@ -1048,7 +1067,27 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
                 )
             hidden_states = outputs[0] 
             #(Batch_size, Seq_len, 2048) if this is below stream_layer or (Batch_size, NGRAMS+1, Seq_len, 2048) if this is upper(or equal) to the stream layer
-
+            if i==PRUNE_TREE_LAYER and additional_attention_mask is not None:
+                # TODO: TREE PRUNING
+                """
+                Shape of hidden states will be (Batch, Seq_len, 2048)
+                Shape of Language Head H -> (2048, # of vacabs), (# of vocabs, 2048)
+                Multiply -> (Batch, seq_len, # of vocabs) (This indicates like the logit of token)
+                Input ids -> (Batch, seq_len)
+                # For each seq_len see the logits in Multiply > threshold -> accept < threshold reject
+                # Ex)
+                Input ids -> (2, 4, 3, 7, 5) #(1, seq_len = 5)
+                Multiply  -> (~~~~) #(1, seq_len, # of vocabs)
+                First watch Multiply[0][2] > Thershold Accept first token, if < Threshold reject first token
+                Second watch Multiply[1][4] > Threshold Accept first token if < Threshold reject second token
+                .....
+                """
+                print("HIDDEN STATE SHAPE")
+                print(hidden_states.shape)
+                print("LM HEAD SHAPE")
+                print(type(self.wte))
+                print(self.wte.weight.shape)
+                
             if i==STREAM_LAYER_NUM-1:
                 batch_size = hidden_states.shape[0]
                 seq_len = hidden_states.shape[1]
@@ -1125,6 +1164,7 @@ class GPTNeoForCausalLM(GPTNeoPreTrainedModel):
                 token_type_ids = token_type_ids[:, -input_ids.shape[1] :]
 
         attention_mask = kwargs.get("attention_mask", None)
+        
         position_ids = kwargs.get("position_ids", None)
 
         if attention_mask is not None and position_ids is None:
@@ -1175,21 +1215,46 @@ class GPTNeoForCausalLM(GPTNeoPreTrainedModel):
         return_dict: Optional[bool] = None,
         additional_attention_mask: Optional[torch.Tensor] = None,
     ) -> Union[Tuple[torch.Tensor], CausalLMOutputWithCrossAttentions]:
-        r"""
+        """
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for language modeling. Note that the labels **are shifted** inside the model, i.e. you can set
             `labels = input_ids` Indices are selected in `[-100, 0, ..., config.vocab_size]` All labels set to `-100`
             are ignored (masked), the loss is only computed for labels in `[0, ..., config.vocab_size]`
         """
-        print("INPUT_IDS DURING FORWARD")
-        print(input_ids.shape)
-        print("ATTENTION MASK DURING FORWARD")
-        print(attention_mask.shape)
-        print("ADDITIONAL ATTENTION MASK")
-        if additional_attention_mask is not None:
-            print(additional_attention_mask.shape)
-        else:
-            print("IT IS NONE")
+
+        # Assume Original input length is 6.
+        # After one forward -> Language model predicts 4 tokens more
+        # First token is decided -> Only one token can be possible
+        """"
+                        First Token
+                Second tokens (0)     Second tokens(1)
+            Third tokend Third Tokens  T
+        1+2+4+8 = 15
+        Now new input ids -> 21
+        
+        During previous generation -> We calculated all information about first 6 tokens
+        New input ids during this forward -> 15 (not a 21)
+        7
+
+        When we are predicting one tokens (AS naive llm)
+
+        Batch, #heads, 7, 7
+        0 -inf -inf .... -inf
+        0    0 -inf .... -inf
+        0    0    0 .... -inf
+        ....
+
+
+        When we are predicting 4 tokens 
+
+        Batch, #heads, 21, 21
+        0 -inf -inf ..... -inf (21)
+        0  0   -inf ...... -inf
+        0  0  0 ......
+
+    8th   
+
+        """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         transformer_outputs = self.transformer(
@@ -1203,6 +1268,7 @@ class GPTNeoForCausalLM(GPTNeoPreTrainedModel):
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
+            additional_attention_mask=additional_attention_mask,
             return_dict=return_dict,
         )
         hidden_states = transformer_outputs[0]

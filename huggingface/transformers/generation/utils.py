@@ -98,6 +98,7 @@ NEED_SETUP_CACHE_CLASSES_MAPPING = {
 
 TOPK=2
 MAGIC_NUMBER=15
+
 ADDITIONAL_ATTENTION_MASK = [[-float('inf') for i in range(MAGIC_NUMBER)] for j in range(MAGIC_NUMBER)]
 for i in range(MAGIC_NUMBER):
     ADDITIONAL_ATTENTION_MASK[i][i] = 0
@@ -666,10 +667,21 @@ class GenerationMixin:
 
         if not is_encoder_decoder:
             # update attention mask
+
+            # First the shape of attention mask
+            # (Batch size, Seq_length)
+            # During the model forward path, model changes the attention mask
+            # It changes to (batch_size, #heads, seq_len, seq_len)
+            # (Batch size, 7)
+            # (Batch size, # heads 7, 7)
+            # (15, 15) attention mask
+            # 1 for the first token 2 for the second token 4 for third 8 for last -> 15
+            # For here just set as one 
+            # We should modify our code during the model forward function -> SO that we follow the paper
             if "attention_mask" in model_kwargs:
                 attention_mask = model_kwargs["attention_mask"]
                 model_kwargs["attention_mask"] = torch.cat(
-                    [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
+                    [attention_mask, attention_mask.new_ones((attention_mask.shape[0], MAGIC_NUMBER))], dim=-1
                 )
         else:
             # update decoder attention mask
@@ -2497,7 +2509,7 @@ class GenerationMixin:
         this_peer_finished = False
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
         model_kwargs["cache_position"] = torch.arange(cur_len, device=input_ids.device)
-
+        
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
@@ -2562,8 +2574,6 @@ class GenerationMixin:
                 model_kwargs,
                 is_encoder_decoder=self.config.is_encoder_decoder,
             )
-            print("INPUT ID DURING GENERATION")
-            print(input_ids.shape)
             unfinished_sequences = unfinished_sequences & ~stopping_criteria(input_ids, scores)
             this_peer_finished = unfinished_sequences.max() == 0
 

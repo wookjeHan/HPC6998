@@ -34,6 +34,7 @@ class Naive_LLM(nn.Module):
     def generate(self, input_texts, return_full_text=True, generate_kwargs={}):
         tokenizer_outputs = self.generate_tokenizer(input_texts, padding=True, return_tensors='pt').to(self.device)
         start_time = time.monotonic()
+        # generate_ids = self.transformers.generate(input_ids='abc', **generate_kwargs)
         generate_ids = self.transformers.generate(**tokenizer_outputs, **generate_kwargs)
         elapsed_time = time.monotonic() - start_time
         generated = self.generate_tokenizer.batch_decode(generate_ids, skip_special_tokens=True)
