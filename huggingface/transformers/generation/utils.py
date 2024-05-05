@@ -95,10 +95,12 @@ if is_accelerate_available():
 NEED_SETUP_CACHE_CLASSES_MAPPING = {
     "static": StaticCache,
 }
-
+NGRAMS=4
 TOPK=2
 MAGIC_NUMBER=15
+VERIFICATION_MODE=False
 
+INDEX_LEVEL_MAP = {0:0,1:1,2:1,3:2,4:2,5:2,6:2,7:3,8:3,9:3,10:3,11:3,12:3,13:3,14:3}
 ADDITIONAL_ATTENTION_MASK = [[-float('inf') for i in range(MAGIC_NUMBER)] for j in range(MAGIC_NUMBER)]
 for i in range(MAGIC_NUMBER):
     ADDITIONAL_ATTENTION_MASK[i][i] = 0
@@ -652,11 +654,26 @@ class GenerationMixin:
         model_kwargs: Dict[str, Any],
         is_encoder_decoder: bool = False,
         standardize_cache_format: bool = False,
+        input_ids: Optional[torch.Tensor] = None,
+        index_for_kv: Optional[List] = None,
     ) -> Dict[str, Any]:
         # update past_key_values
-        model_kwargs["past_key_values"] = self._extract_past_from_model_output(
+        # model_kwargs["past_key_values"] = self._extract_past_from_model_output(
+        #     outputs, standardize_cache_format=standardize_cache_format
+        # )
+        pkv = self._extract_past_from_model_output(
             outputs, standardize_cache_format=standardize_cache_format
-        )
+        )#Tuple of length = model_layers Each element is tuple of two tensors #(batch_size, num_heads, seq_length, embed_size_per_head)
+        if pkv is not None and index_for_kv is not None:
+            pkv = [[ele[0],ele[1]] for ele in pkv]
+            # print("INDEX TO PICK IN CHANGING KV PAST : ", index_for_kv)
+            for i in range(len(pkv)):
+                for j in range(2):
+                    # print(f"PKV[{i}][{j}] SHAPE")
+                    # print(pkv[i][j].shape)
+                    pkv[i][j] = pkv[i][j][:,:,index_for_kv,:]
+        model_kwargs['past_key_values'] = pkv
+        
         if getattr(outputs, "state", None) is not None:
             model_kwargs["state"] = outputs.state
 
@@ -679,10 +696,7 @@ class GenerationMixin:
             # For here just set as one 
             # We should modify our code during the model forward function -> SO that we follow the paper
             if "attention_mask" in model_kwargs:
-                attention_mask = model_kwargs["attention_mask"]
-                model_kwargs["attention_mask"] = torch.cat(
-                    [attention_mask, attention_mask.new_ones((attention_mask.shape[0], MAGIC_NUMBER))], dim=-1
-                )
+                model_kwargs["attention_mask"] = torch.ones_like(input_ids)
         else:
             # update decoder attention mask
             if "decoder_attention_mask" in model_kwargs:
@@ -2513,7 +2527,9 @@ class GenerationMixin:
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-
+            # print("MODEL INPUTS FOR FORWARD")
+            # print(model_inputs['input_ids'].shape, model_inputs['attention_mask'].shape)
+            
             # forward pass to get next token
             outputs = self(
                 **model_inputs,
@@ -2525,7 +2541,46 @@ class GenerationMixin:
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
             # Logits shape will be (batch, N, seq_len, hidden_states) instead
-            next_token_logits = outputs.logits[:, :,  -1, :] #(batch, N, hidden_states)
+            # WE NEED TO DO VERIFICATION
+            next_token_logits = None
+            index_to_pick = None
+            indexes_for_kv = None
+            if outputs.indices_valid is not None:
+                if VERIFICATION_MODE:
+                    # We need to do verification
+                    next_token_logits=None
+                    pass
+                else:
+                    # We do not need to do verification
+                    # Just assume that all pruned tokens are correct (Pick randomly if there are more than ones)
+                    # Verfication should be done by main stream
+                    prev_length = input_ids.shape[1] - MAGIC_NUMBER
+                    index_to_pick = [i for i in range(prev_length)]
+                    is_visited = set([])
+                    last_index = None
+                    indexes_for_kv = [i for i in range(prev_length)]
+                    for idx, i in enumerate(outputs.indices_valid):
+                        tgt = i.item()
+                        if INDEX_LEVEL_MAP[tgt] not in is_visited:
+                            is_visited.add(INDEX_LEVEL_MAP[tgt])
+                            index_to_pick.append(prev_length+tgt)
+                            last_index = idx
+                            indexes_for_kv.append(idx+prev_length)
+                    # Modify logits & Input_Ids
+                    # print("INDICES VALID")
+                    # print(outputs.indices_valid)
+                    # print("INDEX TO PICK")
+                    # print(index_to_pick)
+                    # print("OUTPUT LOGITS")
+                    # print(outputs.logits.shape)
+                    # print("PREV LENGTH")
+                    # print(prev_length)
+                    next_token_logits = outputs.logits[:, :, last_index, :]
+                    input_ids = input_ids[:, index_to_pick]
+                    # print("INPUT IDS")
+                    # print(input_ids.shape)
+            if next_token_logits is None:
+                next_token_logits = outputs.logits[:, :,  -1, :] #(batch, N, hidden_states)
             # pre-process distribution
             next_tokens_scores = logits_processor(input_ids, next_token_logits) #(batch, N, hidden_states)
 
@@ -2566,13 +2621,16 @@ class GenerationMixin:
             )
             # update generated ids, model inputs, and length for next step
             input_ids = torch.cat([input_ids, next_tokens.reshape(next_tokens.shape[0], -1)], dim=-1)
-
+            # print("INPUT IDS FOR OUTPUT")
+            # print(input_ids.shape)
             if streamer is not None:
                 streamer.put(next_tokens.cpu())
             model_kwargs = self._update_model_kwargs_for_generation(
                 outputs,
                 model_kwargs,
                 is_encoder_decoder=self.config.is_encoder_decoder,
+                input_ids=input_ids,
+                index_for_kv=indexes_for_kv,
             )
             unfinished_sequences = unfinished_sequences & ~stopping_criteria(input_ids, scores)
             this_peer_finished = unfinished_sequences.max() == 0

@@ -15,9 +15,8 @@
 """ PyTorch GPT Neo model."""
 STREAM_LAYER_NUM=12
 NGRAMS=3
-PRUNE_TREE_LAYER=3
-
-
+PRUNE_TREE_LAYER=6
+PRUNE_THRESHOLD=5e-7
 import os
 from typing import Optional, Tuple, Union
 
@@ -231,8 +230,7 @@ class GPTNeoSelfAttention(nn.Module):
         query = query.to(torch.float32)
         key = key.to(torch.float32)
 
-        attn_weights = torch.matmul(query, key.transpose(-1, -2))
-
+        attn_weights = torch.matmul(query, key.transpose(-1, -2)) #(Batch, #head, new_tokens, seq_len)
         query_length, key_length = query.size(-2), key.size(-2)
         causal_mask = self.bias[:, :, key_length - query_length : key_length, :key_length]
         mask_value = torch.finfo(attn_weights.dtype).min
@@ -240,10 +238,15 @@ class GPTNeoSelfAttention(nn.Module):
         # Need to be on the same device, otherwise `RuntimeError: ..., x and y to be on the same device`
         mask_value = torch.tensor(mask_value, dtype=attn_weights.dtype).to(attn_weights.device)
         attn_weights = torch.where(causal_mask, attn_weights, mask_value)
-
+        
+        # print("ATTN_WEIGHTS SHAPE")
+        # print(attn_weights.shape)
+        # print("ATTENTION_MASK SHAPE")
+        # print(attention_mask.shape)
+        
         if attention_mask is not None:
             # Apply the attention mask
-            attn_weights = attn_weights + attention_mask
+            attn_weights = attn_weights + attention_mask #(Batch, 1, new_tokens, seq_len)
 
         attn_weights = nn.functional.softmax(attn_weights, dim=-1)
         attn_weights = attn_weights.to(value.dtype)
@@ -266,25 +269,33 @@ class GPTNeoSelfAttention(nn.Module):
         use_cache=False,
         output_attentions=False,
     ):
+        # print("HIDDEN STATE BEFORE QKV")
+        # print(hidden_states.shape)
         query = self.q_proj(hidden_states)
         key = self.k_proj(hidden_states)
         value = self.v_proj(hidden_states)
-
+        # print("QKV SHAPE")
+        # print(query.shape, key.shape, value.shape)
         query = self._split_heads(query, self.num_heads, self.head_dim)
         key = self._split_heads(key, self.num_heads, self.head_dim)
         value = self._split_heads(value, self.num_heads, self.head_dim)
 
         if layer_past is not None:
-            past_key = layer_past[0]
+            past_key = layer_past[0] #(Batch, #head, #prev, hidden states)
             past_value = layer_past[1]
-            key = torch.cat((past_key, key), dim=-2)
+            # print("PREV KEY VALUE SHAPE")
+            # print(key.shape, value.shape)
+            # print("PAST KEY VALUE SHAPE")
+            # print(past_key.shape, past_value.shape)
+            key = torch.cat((past_key, key), dim=-2) #(Batch, #head, #new, hidden_states) -> #(Batch, #head, seq_len, hidden_states)
             value = torch.cat((past_value, value), dim=-2)
-
         if use_cache is True:
             present = (key, value)
         else:
             present = None
-
+        # print("AFTER KEY VALUE SHAPE")
+        # print(key.shape)
+        # print(value.shape)
         attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
 
         attn_output = self._merge_heads(attn_output, self.num_heads, self.head_dim)
@@ -765,8 +776,12 @@ class GPTNeoBlock(nn.Module):
         use_cache=False,
         output_attentions=False,
     ):
+        # print("HIDDEN STATES DURING BLOCK")
+        # print(hidden_states.shape)
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
+        # print("HIDDEN STATES DURING BLOCK22")
+        # print(hidden_states.shape)
         attn_outputs = self.attn(
             hidden_states,
             layer_past=layer_past,
@@ -1042,7 +1057,9 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
         presents = () if use_cache else None
         all_self_attentions = () if output_attentions else None
         all_hidden_states = () if output_hidden_states else None
+        indices_valid = None
         for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
+            # print("I : ", i)
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
@@ -1057,6 +1074,8 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
                     output_attentions,
                 )
             else:
+                # print("HIDDEN STATES RIGHT BEFORE BLOCK")
+                # print(hidden_states.shape)
                 outputs = block(
                     hidden_states,
                     layer_past=layer_past,
@@ -1082,11 +1101,38 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
                 Second watch Multiply[1][4] > Threshold Accept first token if < Threshold reject second token
                 .....
                 """
-                print("HIDDEN STATE SHAPE")
-                print(hidden_states.shape)
-                print("LM HEAD SHAPE")
-                print(type(self.wte))
-                print(self.wte.weight.shape)
+                logits_multiplied = torch.softmax(torch.matmul(hidden_states, self.wte.weight.transpose(0, 1)), dim=-1) # (Batch, seq_len, 50257)
+                logits_multiplied = logits_multiplied[torch.arange(hidden_states.shape[0]).unsqueeze(1), torch.arange(hidden_states.shape[1]).unsqueeze(0), input_ids]
+                logits_masked = torch.where(logits_multiplied > PRUNE_THRESHOLD, 1, 0) # (Batch, seq_len)
+                logits_valid = logits_masked + additional_attention_mask
+                logits_valid = (logits_valid!=0).all(dim=1)
+                indices_valid = torch.nonzero(logits_valid, as_tuple=False).reshape(-1)
+                if indices_valid.numel()==0:
+                    indices_valid = torch.tensor([0], device='cuda')
+                elif indices_valid[0] != 0:
+                    indices_valid = torch.cat(torch.tensor([0]), indices_valid)
+                # PRUNE HIDDEN_STATES
+                # print("PRUNED TO ", indices_valid)
+                # print("PREVIOUS HIDDEN STATE SHPAE")
+                # print(hidden_states.shape)
+                hidden_states = hidden_states[:, indices_valid, :]
+                # print("AFTER HIDDEN STATE SHPAE")
+                # print(hidden_states.shape)
+                # Prune attention mask too.
+                # print("PREVIOUS_ATTENTION_MASK shape")
+                # print(attention_mask.shape)
+                prev_length = attention_mask.shape[-1]-15
+                new_attention_mask = torch.zeros(attention_mask.shape[0], attention_mask.shape[1], indices_valid.shape[0], prev_length+indices_valid.shape[0], device='cuda') #(Batch, Seq_len, new_token, new_token+prev_token)
+                # print("NEW_ATTENTION_MASK_SHAPE")
+                # print(new_attention_mask.shape)
+                # Need to make -inf when not related
+                new_attention_mask[:, :, 0, prev_length+1:] = float('-inf')
+                for idx in range(1, indices_valid.shape[0]):
+                    index_1 = indices_valid[idx].item()
+                    for j in range(prev_length, new_attention_mask.shape[-1]):
+                        index_2 = indices_valid[j-prev_length].item()
+                        new_attention_mask[:,:,idx, j]=attention_mask[0,0,index_1,prev_length+index_2]
+                attention_mask = new_attention_mask
                 
             if i==STREAM_LAYER_NUM-1:
                 batch_size = hidden_states.shape[0]
@@ -1095,16 +1141,14 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
                 hidden_states = hidden_states.unsqueeze(1) #
                 # Use broadcasting to repeat along the new dimension
                 hidden_states = hidden_states.expand(batch_size, NGRAMS+1, seq_len, dim)
-            # if i==STREAM_LAYER_NUM:
-            #     print(hidden_states.shape)
-                # quit()
                 
             if use_cache is True:
                 presents = presents + (outputs[1],)
 
             if output_attentions:
                 all_self_attentions = all_self_attentions + (outputs[2 if use_cache else 1],)
-
+            # print("HIDDEN STATES BEFORE EXIT THE BLOCK")
+            # print(hidden_states.shape)
         hidden_states = self.ln_f(hidden_states)
         # Add last hidden state
         if output_hidden_states:
@@ -1112,13 +1156,12 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
 
         if not return_dict:
             return tuple(v for v in [hidden_states, presents, all_hidden_states, all_self_attentions] if v is not None)
-        # print(hidden_states.shape)
-        # quit()
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=presents,
             hidden_states=all_hidden_states,
             attentions=all_self_attentions,
+            indices_valid=indices_valid,
         )
 
 
@@ -1303,6 +1346,7 @@ class GPTNeoForCausalLM(GPTNeoPreTrainedModel):
             past_key_values=transformer_outputs.past_key_values,
             hidden_states=transformer_outputs.hidden_states,
             attentions=transformer_outputs.attentions,
+            indices_valid=transformer_outputs.indices_valid,
         )
 
     @staticmethod
