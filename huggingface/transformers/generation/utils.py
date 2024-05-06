@@ -16,6 +16,7 @@
 import copy
 import inspect
 import warnings
+import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -99,8 +100,10 @@ NGRAMS=4
 TOPK=2
 MAGIC_NUMBER=15
 VERIFICATION_MODE=False
+ACCEPT_RATIO=0.8
 
 INDEX_LEVEL_MAP = {0:0,1:1,2:1,3:2,4:2,5:2,6:2,7:3,8:3,9:3,10:3,11:3,12:3,13:3,14:3}
+LEVEL_INDEX_MAP = {0:[0],1:[1,2],2:[3,4,5,6],3:[7,8,9,10,11,12,13,14]}
 ADDITIONAL_ATTENTION_MASK = [[-float('inf') for i in range(MAGIC_NUMBER)] for j in range(MAGIC_NUMBER)]
 for i in range(MAGIC_NUMBER):
     ADDITIONAL_ATTENTION_MASK[i][i] = 0
@@ -697,6 +700,8 @@ class GenerationMixin:
             # We should modify our code during the model forward function -> SO that we follow the paper
             if "attention_mask" in model_kwargs:
                 model_kwargs["attention_mask"] = torch.ones_like(input_ids)
+                print("ATTENTION MASK FOR FORWARD")
+                print(model_kwargs["attention_mask"].shape)
         else:
             # update decoder attention mask
             if "decoder_attention_mask" in model_kwargs:
@@ -2545,40 +2550,72 @@ class GenerationMixin:
             next_token_logits = None
             index_to_pick = None
             indexes_for_kv = None
+            prev_length = input_ids.shape[1] - MAGIC_NUMBER
             if outputs.indices_valid is not None:
                 if VERIFICATION_MODE:
                     # We need to do verification
-                    next_token_logits=None
-                    pass
+                    # First let's see what is correct
+                    index_to_pick = [i for i in range(prev_length+1)]
+                    indexes_for_kv = [i for i in range(prev_length+1)]
+                    last_index = 0
+                    
+                    logits = outputs.logits[:, 0, :, :] # (Batch, pruned_seq_len, #vocab_num) only by main stream
+                    next_tokens_scores = logits_processor(input_ids, logits) #(Batch, pruned_seq_len, #vocab_num)
+                    next_tokens = next_tokens_scores.argmax(dim=-1) #(Batch, prnued_seq_len)
+                    cursor = 0
+                    # We speculate 3 tokens
+                    # Comparing next_tokens (Which is verificated result by main stream) vs our speculated tokens
+                    # I love HPML
+                    # Generate 4 tokens -> because(Fixed, it is generated, so it is 100% correct) it is cool (Speculated do not know whether it is correct or not)
+                    # (it, that), (is, are), (cool, fun)
+                    # We also prune the tree
+                    # After pruning let's assume the result is like
+                    # because (100% correct) (it) (is, are), (cool, fun)
+                    # Then next_tokens indicates the score of next token of (because) the score of next token of (it) the score of next token of (is), the score of next token of (are), the score of next token of (cool), the score of next token of (fun)
+                    # 1. (it) was correct! ->  comparing next token of it vs (is, are)
+                    # 2. (it) was wrong!   -> then verification end
+                    # It is happening during generation file.
+                    # Model forward -> we got a logit -> From logit we choose next tokens 
+                    # In general case
+                    # Model forward -> we got a logit -> pick the highest score token -> Model forward -> pick the highest score token -> Model forward ....
+                    # Our case
+                    # Model forward (And pruning) -> we got a logit -> Verify whether speculation is correct -> pick the highest score token after where speculation was correct -> Model forward (And pruning)
+                    # Conceptual -> Forward and generate are not separated.
+                    # MOdel forward = token generation
+                    # In code respect to actual implementation huggingface -> huggingface separate model forward and picking the tokens. 
+                    for idx in range(1, NGRAMS):
+                        flag = 0
+                        for tgt in LEVEL_INDEX_MAP[idx]:
+                            lookat = (outputs.indices_valid==tgt).nonzero(as_tuple=True)
+                            if lookat[0].shape[0]!=0 and input_ids[0][prev_length+tgt] == next_tokens[0][cursor]:
+                                flag = 1
+                                cursor = lookat[0].item()
+                                index_to_pick.append(prev_length+tgt)
+                                indexes_for_kv.append(prev_length+lookat[0].item())
+                                # We find for current level, let's go next level
+                                break
+                        # Nothing find in this level let's break verification ends
+                        if flag == 0:
+                            break
+                    next_token_logits = outputs.logits[:, :, cursor, :]
+                    input_ids = input_ids[:, index_to_pick] # Previously (Batch, all_seq_len)                        
                 else:
                     # We do not need to do verification
                     # Just assume that all pruned tokens are correct (Pick randomly if there are more than ones)
                     # Verfication should be done by main stream
-                    prev_length = input_ids.shape[1] - MAGIC_NUMBER
-                    index_to_pick = [i for i in range(prev_length)]
-                    is_visited = set([])
-                    last_index = None
-                    indexes_for_kv = [i for i in range(prev_length)]
-                    for idx, i in enumerate(outputs.indices_valid):
+                    index_to_pick = [i for i in range(prev_length+1)]
+                    is_visited = set([0])
+                    last_index = 0
+                    indexes_for_kv = [i for i in range(prev_length+1)]
+                    for idx, i in enumerate(outputs.indices_valid[1:]):
                         tgt = i.item()
-                        if INDEX_LEVEL_MAP[tgt] not in is_visited:
+                        if INDEX_LEVEL_MAP[tgt] not in is_visited and (tgt-1)//2 not in is_visited and random.random() <= ACCEPT_RATIO:
                             is_visited.add(INDEX_LEVEL_MAP[tgt])
                             index_to_pick.append(prev_length+tgt)
                             last_index = idx
-                            indexes_for_kv.append(idx+prev_length)
-                    # Modify logits & Input_Ids
-                    # print("INDICES VALID")
-                    # print(outputs.indices_valid)
-                    # print("INDEX TO PICK")
-                    # print(index_to_pick)
-                    # print("OUTPUT LOGITS")
-                    # print(outputs.logits.shape)
-                    # print("PREV LENGTH")
-                    # print(prev_length)
+                            indexes_for_kv.append(idx+1+prev_length)
                     next_token_logits = outputs.logits[:, :, last_index, :]
                     input_ids = input_ids[:, index_to_pick]
-                    # print("INPUT IDS")
-                    # print(input_ids.shape)
             if next_token_logits is None:
                 next_token_logits = outputs.logits[:, :,  -1, :] #(batch, N, hidden_states)
             # pre-process distribution
@@ -2621,8 +2658,8 @@ class GenerationMixin:
             )
             # update generated ids, model inputs, and length for next step
             input_ids = torch.cat([input_ids, next_tokens.reshape(next_tokens.shape[0], -1)], dim=-1)
-            # print("INPUT IDS FOR OUTPUT")
-            # print(input_ids.shape)
+            print("INPUT IDS FOR OUTPUT")
+            print(input_ids.shape)
             if streamer is not None:
                 streamer.put(next_tokens.cpu())
             model_kwargs = self._update_model_kwargs_for_generation(

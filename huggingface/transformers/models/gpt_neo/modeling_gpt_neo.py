@@ -1111,16 +1111,7 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
                     indices_valid = torch.tensor([0], device='cuda')
                 elif indices_valid[0] != 0:
                     indices_valid = torch.cat(torch.tensor([0]), indices_valid)
-                # PRUNE HIDDEN_STATES
-                # print("PRUNED TO ", indices_valid)
-                # print("PREVIOUS HIDDEN STATE SHPAE")
-                # print(hidden_states.shape)
                 hidden_states = hidden_states[:, indices_valid, :]
-                # print("AFTER HIDDEN STATE SHPAE")
-                # print(hidden_states.shape)
-                # Prune attention mask too.
-                # print("PREVIOUS_ATTENTION_MASK shape")
-                # print(attention_mask.shape)
                 prev_length = attention_mask.shape[-1]-15
                 new_attention_mask = torch.zeros(attention_mask.shape[0], attention_mask.shape[1], indices_valid.shape[0], prev_length+indices_valid.shape[0], device='cuda') #(Batch, Seq_len, new_token, new_token+prev_token)
                 # print("NEW_ATTENTION_MASK_SHAPE")

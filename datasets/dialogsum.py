@@ -60,7 +60,9 @@ class DialogSum(Dataset):
         samples = []
         with open(f"{self.root}/{data_file}", 'r') as file:
             for line in file:
-                samples += [json.loads(line)]
+                data = json.loads(line)
+                if isinstance(data['summary'], str):
+                    samples += [data]
         return np.array([DialogSumSample(**item) for item in samples])
 
 
