@@ -31,7 +31,7 @@ When running with GeForce RTX 3090, the results are as below. (tokens/sec)
 |        Naive LLM    | 44.459 | 45.504 | 45.560 |
 | LLM+half precision Quantization       | 41.660      | 42.075     | 42.360 |
 | LLM+Flash Attention2 | 49.229          | 49.290          | 43.971     | 
-| LLM+Speculative Streaming | **54.661**          | **56.038 **         | **54.782**    | 
+| LLM+Speculative Streaming | **54.661**          | **56.038**         | **54.782**    | 
 
 The performance by acceptance ratio was as a below graph.
 
