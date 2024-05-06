@@ -161,7 +161,6 @@ def load_tf_weights_in_gpt_neo(model, config, gpt_neo_checkpoint_path):
         if pointer.shape != array.shape:
             raise ValueError(f"Pointer shape {pointer.shape} and array shape {array.shape} mismatched {name}")
 
-        print(f"Initialize PyTorch weight {name}")
         pointer.data = torch.from_numpy(array)
 
     # init the final linear layer using word embeddings
@@ -239,11 +238,6 @@ class GPTNeoSelfAttention(nn.Module):
         mask_value = torch.tensor(mask_value, dtype=attn_weights.dtype).to(attn_weights.device)
         attn_weights = torch.where(causal_mask, attn_weights, mask_value)
         
-        # print("ATTN_WEIGHTS SHAPE")
-        # print(attn_weights.shape)
-        # print("ATTENTION_MASK SHAPE")
-        # print(attention_mask.shape)
-        
         if attention_mask is not None:
             # Apply the attention mask
             attn_weights = attn_weights + attention_mask #(Batch, 1, new_tokens, seq_len)
@@ -269,13 +263,9 @@ class GPTNeoSelfAttention(nn.Module):
         use_cache=False,
         output_attentions=False,
     ):
-        # print("HIDDEN STATE BEFORE QKV")
-        # print(hidden_states.shape)
         query = self.q_proj(hidden_states)
         key = self.k_proj(hidden_states)
         value = self.v_proj(hidden_states)
-        # print("QKV SHAPE")
-        # print(query.shape, key.shape, value.shape)
         query = self._split_heads(query, self.num_heads, self.head_dim)
         key = self._split_heads(key, self.num_heads, self.head_dim)
         value = self._split_heads(value, self.num_heads, self.head_dim)
@@ -283,19 +273,13 @@ class GPTNeoSelfAttention(nn.Module):
         if layer_past is not None:
             past_key = layer_past[0] #(Batch, #head, #prev, hidden states)
             past_value = layer_past[1]
-            # print("PREV KEY VALUE SHAPE")
-            # print(key.shape, value.shape)
-            # print("PAST KEY VALUE SHAPE")
-            # print(past_key.shape, past_value.shape)
             key = torch.cat((past_key, key), dim=-2) #(Batch, #head, #new, hidden_states) -> #(Batch, #head, seq_len, hidden_states)
             value = torch.cat((past_value, value), dim=-2)
         if use_cache is True:
             present = (key, value)
         else:
             present = None
-        # print("AFTER KEY VALUE SHAPE")
-        # print(key.shape)
-        # print(value.shape)
+
         attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
 
         attn_output = self._merge_heads(attn_output, self.num_heads, self.head_dim)
@@ -776,12 +760,8 @@ class GPTNeoBlock(nn.Module):
         use_cache=False,
         output_attentions=False,
     ):
-        # print("HIDDEN STATES DURING BLOCK")
-        # print(hidden_states.shape)
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
-        # print("HIDDEN STATES DURING BLOCK22")
-        # print(hidden_states.shape)
         attn_outputs = self.attn(
             hidden_states,
             layer_past=layer_past,
@@ -1059,7 +1039,6 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         indices_valid = None
         for i, (block, layer_past) in enumerate(zip(self.h, past_key_values)):
-            # print("I : ", i)
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
@@ -1074,8 +1053,6 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
                     output_attentions,
                 )
             else:
-                # print("HIDDEN STATES RIGHT BEFORE BLOCK")
-                # print(hidden_states.shape)
                 outputs = block(
                     hidden_states,
                     layer_past=layer_past,
@@ -1087,20 +1064,7 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
             hidden_states = outputs[0] 
             #(Batch_size, Seq_len, 2048) if this is below stream_layer or (Batch_size, NGRAMS+1, Seq_len, 2048) if this is upper(or equal) to the stream layer
             if i==PRUNE_TREE_LAYER and additional_attention_mask is not None:
-                # TODO: TREE PRUNING
-                """
-                Shape of hidden states will be (Batch, Seq_len, 2048)
-                Shape of Language Head H -> (2048, # of vacabs), (# of vocabs, 2048)
-                Multiply -> (Batch, seq_len, # of vocabs) (This indicates like the logit of token)
-                Input ids -> (Batch, seq_len)
-                # For each seq_len see the logits in Multiply > threshold -> accept < threshold reject
-                # Ex)
-                Input ids -> (2, 4, 3, 7, 5) #(1, seq_len = 5)
-                Multiply  -> (~~~~) #(1, seq_len, # of vocabs)
-                First watch Multiply[0][2] > Thershold Accept first token, if < Threshold reject first token
-                Second watch Multiply[1][4] > Threshold Accept first token if < Threshold reject second token
-                .....
-                """
+                
                 logits_multiplied = torch.softmax(torch.matmul(hidden_states, self.wte.weight.transpose(0, 1)), dim=-1) # (Batch, seq_len, 50257)
                 logits_multiplied = logits_multiplied[torch.arange(hidden_states.shape[0]).unsqueeze(1), torch.arange(hidden_states.shape[1]).unsqueeze(0), input_ids]
                 logits_masked = torch.where(logits_multiplied > PRUNE_THRESHOLD, 1, 0) # (Batch, seq_len)
@@ -1114,8 +1078,6 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
                 hidden_states = hidden_states[:, indices_valid, :]
                 prev_length = attention_mask.shape[-1]-15
                 new_attention_mask = torch.zeros(attention_mask.shape[0], attention_mask.shape[1], indices_valid.shape[0], prev_length+indices_valid.shape[0], device='cuda') #(Batch, Seq_len, new_token, new_token+prev_token)
-                # print("NEW_ATTENTION_MASK_SHAPE")
-                # print(new_attention_mask.shape)
                 # Need to make -inf when not related
                 new_attention_mask[:, :, 0, prev_length+1:] = float('-inf')
                 for idx in range(1, indices_valid.shape[0]):
@@ -1138,8 +1100,6 @@ class GPTNeoModel(GPTNeoPreTrainedModel):
 
             if output_attentions:
                 all_self_attentions = all_self_attentions + (outputs[2 if use_cache else 1],)
-            # print("HIDDEN STATES BEFORE EXIT THE BLOCK")
-            # print(hidden_states.shape)
         hidden_states = self.ln_f(hidden_states)
         # Add last hidden state
         if output_hidden_states:

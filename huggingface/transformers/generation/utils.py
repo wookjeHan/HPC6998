@@ -661,19 +661,13 @@ class GenerationMixin:
         index_for_kv: Optional[List] = None,
     ) -> Dict[str, Any]:
         # update past_key_values
-        # model_kwargs["past_key_values"] = self._extract_past_from_model_output(
-        #     outputs, standardize_cache_format=standardize_cache_format
-        # )
         pkv = self._extract_past_from_model_output(
             outputs, standardize_cache_format=standardize_cache_format
         )#Tuple of length = model_layers Each element is tuple of two tensors #(batch_size, num_heads, seq_length, embed_size_per_head)
         if pkv is not None and index_for_kv is not None:
             pkv = [[ele[0],ele[1]] for ele in pkv]
-            # print("INDEX TO PICK IN CHANGING KV PAST : ", index_for_kv)
             for i in range(len(pkv)):
                 for j in range(2):
-                    # print(f"PKV[{i}][{j}] SHAPE")
-                    # print(pkv[i][j].shape)
                     pkv[i][j] = pkv[i][j][:,:,index_for_kv,:]
         model_kwargs['past_key_values'] = pkv
         
@@ -687,21 +681,8 @@ class GenerationMixin:
 
         if not is_encoder_decoder:
             # update attention mask
-
-            # First the shape of attention mask
-            # (Batch size, Seq_length)
-            # During the model forward path, model changes the attention mask
-            # It changes to (batch_size, #heads, seq_len, seq_len)
-            # (Batch size, 7)
-            # (Batch size, # heads 7, 7)
-            # (15, 15) attention mask
-            # 1 for the first token 2 for the second token 4 for third 8 for last -> 15
-            # For here just set as one 
-            # We should modify our code during the model forward function -> SO that we follow the paper
             if "attention_mask" in model_kwargs:
                 model_kwargs["attention_mask"] = torch.ones_like(input_ids)
-                print("ATTENTION MASK FOR FORWARD")
-                print(model_kwargs["attention_mask"].shape)
         else:
             # update decoder attention mask
             if "decoder_attention_mask" in model_kwargs:
@@ -2532,8 +2513,6 @@ class GenerationMixin:
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-            # print("MODEL INPUTS FOR FORWARD")
-            # print(model_inputs['input_ids'].shape, model_inputs['attention_mask'].shape)
             
             # forward pass to get next token
             outputs = self(
@@ -2658,8 +2637,6 @@ class GenerationMixin:
             )
             # update generated ids, model inputs, and length for next step
             input_ids = torch.cat([input_ids, next_tokens.reshape(next_tokens.shape[0], -1)], dim=-1)
-            print("INPUT IDS FOR OUTPUT")
-            print(input_ids.shape)
             if streamer is not None:
                 streamer.put(next_tokens.cpu())
             model_kwargs = self._update_model_kwargs_for_generation(
