@@ -1,6 +1,9 @@
 import argparse
 from tqdm import tqdm
+import torch  
+
 from transformers import GenerationConfig
+
 
 from models import Naive_LLM, Quant_LLM, LLM_Flash, LLM_MultiStream
 from datasets import Spider, DialogSum, E2ENLG, create_dataloader
@@ -26,26 +29,28 @@ if __name__ == "__main__":
 
     print('GPT-Neo 2.7b:')
     if args.model_type == 'naive':
+        print("LOADING NAIVE LLM")
         neo = Naive_LLM("EleutherAI/gpt-neo-2.7B")
     elif args.model_type == 'quant':
+        print("LOADING QUANTIZED LLM")
         neo = Quant_LLM("EleutherAI/gpt-neo-2.7B")
     elif args.model_type == 'flash':
+        print("LOADING FLASH LLM")
         neo = LLM_Flash("EleutherAI/gpt-neo-2.7B")
     elif args.model_type == 'spec_stream':
+        print("LOADING MULTI STREAM LLM")
         neo = LLM_MultiStream("EleutherAI/gpt-neo-2.7B")
     else:
         assert False, "Model Type not defined"
         
     neo.transformers.eval()
     config = GenerationConfig(max_new_tokens=256, pad_token_id=neo.generate_tokenizer.pad_token_id)
-
     total_tokens, total_time = 0, 0.0
     # for idx in tqdm(range(0, len(spider_prompts), batch_size)):
     for idx in tqdm(range(0, args.sample_size)):
         _, tokens, elapsed = neo.generate(spider_prompts[idx:idx+batch_size], generate_kwargs={"generation_config": config})
         total_tokens += tokens
         total_time += elapsed
-        print(f"TOKENS : {tokens}, TIME: {elapsed}")
     
     print(f"Spider: Tokens/sec: {total_tokens / total_time} ({total_time} seconds)")
 

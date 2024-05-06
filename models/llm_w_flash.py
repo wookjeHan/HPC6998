@@ -10,7 +10,7 @@ class LLM_Flash(nn.Module):
         super(LLM_Flash, self).__init__()
         self.device = device
         # Load Model
-        self.transformers = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2")
+        self.transformers = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs, torch_dtype=torch.float16, attn_implementation="flash_attention_2")
         self.transformers.to(self.device)
         # Load Tokenizer (For Forward)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, **tok_kwargs)
@@ -35,6 +35,7 @@ class LLM_Flash(nn.Module):
         tokenizer_outputs = self.generate_tokenizer(input_texts, padding=True, return_tensors='pt').to(self.device)
         start_time = time.monotonic()
         generate_ids = self.transformers.generate(**tokenizer_outputs, **generate_kwargs)
+        torch.cuda.synchronize()
         elapsed_time = time.monotonic() - start_time
         generated = self.generate_tokenizer.batch_decode(generate_ids, skip_special_tokens=True)
         # Calculate tokens per second

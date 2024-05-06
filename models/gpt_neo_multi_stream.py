@@ -35,10 +35,10 @@ class LLM_MultiStream(nn.Module):
         return loss
     
     def generate(self, input_texts, return_full_text=True, generate_kwargs={}):
-        print("Input Texts:", input_texts)
         tokenizer_outputs = self.generate_tokenizer(input_texts, padding=True, return_tensors='pt').to(self.device)
         start_time = time.monotonic()
         generate_ids = self.transformers.generate(**tokenizer_outputs, **generate_kwargs)
+        torch.cuda.synchronize()
         elapsed_time = time.monotonic() - start_time
         generated = self.generate_tokenizer.batch_decode(generate_ids, skip_special_tokens=True)
         # Calculate tokens per second

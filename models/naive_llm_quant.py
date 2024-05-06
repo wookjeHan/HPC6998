@@ -5,6 +5,8 @@ import torch.nn as nn
 import copy
 import time
 
+torch.backends.cudnn.benchmark = True
+
 class Quant_LLM(nn.Module):
     def __init__(self, model_name, model_kwargs={}, tok_kwargs={}, device='cuda'):
         super(Quant_LLM, self).__init__()
@@ -36,6 +38,7 @@ class Quant_LLM(nn.Module):
         start_time = time.monotonic()
         # generate_ids = self.transformers.generate(input_ids='abc', **generate_kwargs)
         generate_ids = self.transformers.generate(**tokenizer_outputs, **generate_kwargs)
+        torch.cuda.synchronize()
         elapsed_time = time.monotonic() - start_time
         generated = self.generate_tokenizer.batch_decode(generate_ids, skip_special_tokens=True)
         # Calculate tokens per second

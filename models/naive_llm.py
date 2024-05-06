@@ -36,6 +36,7 @@ class Naive_LLM(nn.Module):
         start_time = time.monotonic()
         # generate_ids = self.transformers.generate(input_ids='abc', **generate_kwargs)
         generate_ids = self.transformers.generate(**tokenizer_outputs, **generate_kwargs)
+        torch.cuda.synchronize()
         elapsed_time = time.monotonic() - start_time
         generated = self.generate_tokenizer.batch_decode(generate_ids, skip_special_tokens=True)
         # Calculate tokens per second
