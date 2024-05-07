@@ -49,7 +49,6 @@ from ...utils import (
     logging,
 )
 from .configuration_gpt_neo import GPTNeoConfig
-from .positional_embedding import LearnedPositionalEmbedding
 
 
 if is_flash_attn_2_available():
@@ -75,8 +74,6 @@ from ..deprecated._archive_maps import GPT_NEO_PRETRAINED_MODEL_ARCHIVE_LIST  # 
 
 
 _CHECKPOINT_FOR_DOC = "EleutherAI/gpt-neo-1.3B"
-
-from .multi_stream_attention import NgramMultiheadAttention
 
 
 # Copied from transformers.models.llama.modeling_llama._get_unpad_data
@@ -619,8 +616,7 @@ class GPTNeoFlashAttention2(GPTNeoSelfAttention):
 
 GPT_NEO_ATTENTION_CLASSES = {
     "eager": GPTNeoSelfAttention,
-    "flash_attention_2": GPTNeoFlashAttention2,
-    "multi_stream_attention": GPTNeoMultiStreamAttention,
+    "flash_attention_2": GPTNeoFlashAttention2
 }
 
 
