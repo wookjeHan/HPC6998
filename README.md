@@ -35,11 +35,11 @@ When running with GeForce RTX 3090, the results are as below. (tokens/sec)
 
 The performance by acceptance ratio was as a below graph.
 
-![image](HPC6998.png)
+![image](images/HPC6998.png)
 
 The time comsumption for each step was as a below graph.
 
-![image](HPC_STACKED.png)
+![image](images/HPC_STACKED.png)
 
 We can notice that LLM+Speculative Streaming was the most powerful optimization technique and unsuprisingly the performance gain is large corresponding to the high token accept ratio.
 

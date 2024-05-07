@@ -1,6 +1,7 @@
 import argparse
 from tqdm import tqdm
 import torch  
+import wandb
 
 from transformers import GenerationConfig
 
@@ -13,7 +14,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_type', type=str, default="naive")
     parser.add_argument('--sample_size', type=int, default=32)
+    parser.add_argument('--use_wandb', type=bool, default=True)
     args = parser.parse_args()
+    if args.use_wandb:
+        wandb.init(project="HPML-6998")
     
     
     batch_size = 1
@@ -45,25 +49,28 @@ if __name__ == "__main__":
         
     neo.transformers.eval()
     config = GenerationConfig(max_new_tokens=256, pad_token_id=neo.generate_tokenizer.pad_token_id)
-    total_tokens, total_time = 0, 0.0
+    spider_total_tokens, spider_total_time = 0, 0.0
     # for idx in tqdm(range(0, len(spider_prompts), batch_size)):
     for idx in tqdm(range(0, args.sample_size)):
         _, tokens, elapsed = neo.generate(spider_prompts[idx:idx+batch_size], generate_kwargs={"generation_config": config})
-        total_tokens += tokens
-        total_time += elapsed
+        spider_total_tokens += tokens
+        spider_total_time += elapsed
     
-    print(f"Spider: Tokens/sec: {total_tokens / total_time} ({total_time} seconds)")
+    print(f"Spider: Tokens/sec: {spider_total_tokens / spider_total_time} ({spider_total_time} seconds)")
 
-    total_tokens, total_time = 0, 0.0
+    dialog_total_tokens, dialog_total_time = 0, 0.0
     for idx in tqdm(range(0, args.sample_size)):
         _, tokens, elapsed = neo.generate(dialogsum_prompts[idx:idx+batch_size], generate_kwargs={"generation_config": config})
-        total_tokens += tokens
-        total_time += elapsed
-    print(f"DialogSum: Tokens/sec: {total_tokens / total_time} ({total_time} seconds)")
+        dialog_total_tokens += tokens
+        dialog_total_time += elapsed
+    print(f"DialogSum: Tokens/sec: {dialog_total_tokens / dialog_total_time} ({dialog_total_time} seconds)")
 
-    total_tokens, total_time = 0, 0.0
+    e2e_total_tokens, e2e_total_time = 0, 0.0
     for idx in tqdm(range(0, args.sample_size)):
         _, tokens, elapsed = neo.generate(e2e_nlg_prompts[idx:idx+batch_size], generate_kwargs={"generation_config": config})
-        total_tokens += tokens
-        total_time += elapsed
-    print(f"E2E-NLG: Tokens/sec: {total_tokens / total_time} ({total_time} seconds)")
+        e2e_total_tokens += tokens
+        e2e_total_time += elapsed
+    print(f"E2E-NLG: Tokens/sec: {e2e_total_tokens / e2e_total_time} ({e2e_total_time} seconds)")
+
+    if args.use_wandb:
+        wandb.log({"Spider": f"{round(spider_total_tokens / spider_total_time, 2)}tok/sec", "Dialog": f"{round(dialog_total_tokens / dialog_total_time,2)}tok/sec", "E2E":f"{round(e2e_total_tokens / e2e_total_time,2)}tok/sec"})
