@@ -57,6 +57,9 @@ The result also demonstrates 1) Speculative streaming spends comparingly large p
 
 You can find more details / experiment on other GPUs on our final report.
 
+## Notice
+This code is compatible with python3.9
+
 ## Version History
 
 * 0.1
