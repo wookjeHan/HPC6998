@@ -49,7 +49,6 @@ from ...utils import (
     logging,
 )
 from .configuration_gpt_neo import GPTNeoConfig
-from .positional_embedding import LearnedPositionalEmbedding
 
 
 if is_flash_attn_2_available():
