@@ -12,7 +12,7 @@ from datasets import Spider, DialogSum, E2ENLG, create_dataloader
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_type', type=str, default="naive")
-    parser.add_argument('--sample_size', type=int, default='32')
+    parser.add_argument('--sample_size', type=int, default=32)
     args = parser.parse_args()
     
     

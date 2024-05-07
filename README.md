@@ -37,8 +37,13 @@ The performance by acceptance ratio was as a below graph.
 
 ![image](HPC6998.png)
 
+The time comsumption for each step was as a below graph.
+
+![image](HPC_STACKED.png)
 
 We can notice that LLM+Speculative Streaming was the most powerful optimization technique and unsuprisingly the performance gain is large corresponding to the high token accept ratio.
+
+The result also demonstrates 1) Speculative streaming spends comparingly large preparation time compared to other techniques due to other stuffs such as building tree structure, verifying the speculated tokens, 2) even with large preparation time, speculative streaming spends the least total time thanks to less forward time which indicates that the benefit from running fewer forward steps (as one forward step generates more tokens) outweighs the more computation for each forward step.
 
 You can find more details / experiment on other GPUs on our final report.
 
